@@ -1,0 +1,11 @@
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+.impeccable-cache/
+design.md
+product.md

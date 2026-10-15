@@ -1,0 +1,86 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-logweave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logweave_local}
+      POSTGRES_DB: ${POSTGRES_DB:-logweave}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-logweave} -d ${POSTGRES_DB:-logweave}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://logweave:logweave_local@postgres:5432/logweave}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      MAX_GENERATION_RATE: ${MAX_GENERATION_RATE:-500}
+      MAX_ACTIVE_SESSIONS: ${MAX_ACTIVE_SESSIONS:-50}
+      MAX_SESSION_QUEUE: ${MAX_SESSION_QUEUE:-10000}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      RETENTION_DAYS: ${RETENTION_DAYS:-7}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://logweave:logweave_local@postgres:5432/logweave}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    deploy:
+      replicas: 2
+    restart: unless-stopped
+  generator:
+    build: ./backend
+    command: ["python", "-m", "app.generator"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://logweave:logweave_local@postgres:5432/logweave}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      INGEST_URL: http://backend:8000/api/logs
+      MAX_TOTAL_GENERATION_RATE: ${MAX_TOTAL_GENERATION_RATE:-500}
+      GENERATOR_IDLE_SECONDS: ${GENERATOR_IDLE_SECONDS:-120}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
+      RETENTION_DAYS: ${RETENTION_DAYS:-7}
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  redis_data:
