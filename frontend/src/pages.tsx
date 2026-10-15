@@ -1352,11 +1352,7 @@ export function Lab({ metrics }: { metrics?: Metrics }) {
       <Header
         title="System lab"
         description="Apply real load and failure controls. Observe the system respond."
-        action={
-          <span className="page-chip">
-            <span className="status-dot" /> Private experiment
-          </span>
-        }
+      
       />
       <div className="lab-grid">
         <section className="panel lab-controls">
