@@ -1,0 +1,2 @@
+
+{"timestamp":"2026-10-28T12:00:00+05:30","service":"checkout-api","host":"checkout-1","severity":"ERROR","message":"phase two tailer verification marker","trace_id":"tail-proof-1"}

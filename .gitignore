@@ -9,3 +9,4 @@ frontend/tsconfig.tsbuildinfo
 .impeccable-cache/
 design.md
 product.md
+benchmarks/results/

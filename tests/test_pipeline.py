@@ -169,3 +169,11 @@ def test_frontend_proxy_reaches_backend(client):
         response = frontend.get('/api/system/health')
         response.raise_for_status()
         assert response.json() == {'api': True, 'redis': True, 'postgres': True}
+
+
+def test_index_shards_are_healthy(client):
+    response = client.get('/api/system/shards')
+    response.raise_for_status()
+    data = response.json()
+    assert data['count'] >= 1
+    assert all(shard['healthy'] for shard in data['shards'])

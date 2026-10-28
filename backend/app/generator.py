@@ -10,7 +10,8 @@ from uuid import uuid4
 
 import httpx
 
-from .core import connect_db, connect_redis
+from .core import connect_dbs, connect_redis
+from .storage import execute_all
 from .sessions import COOKIE, REGISTRY, SESSION_TTL, active_sessions, key
 
 logger = logging.getLogger('logweave.generator')
@@ -49,26 +50,25 @@ async def send_batch(client, redis, ingest_url, session_id, count):
         await redis.set(key(session_id, 'generator:last_error'), str(exc)[:250], ex=60)
 
 
-async def cleanup_expired(redis, pool):
+async def cleanup_expired(redis, pools):
     expired = await redis.zrangebyscore(REGISTRY, '-inf', time.time() - SESSION_TTL)
     for session_id in expired:
         # Expired entries are already excluded from generation and worker reads.
         # Keep the registry entry until cleanup succeeds so failures can retry.
-        async with pool.acquire() as conn:
-            await conn.execute('DELETE FROM log_events WHERE session_id=$1', session_id)
+        await execute_all(pools, 'DELETE FROM log_events WHERE session_id=$1', session_id)
         keys = [name async for name in redis.scan_iter(match=key(session_id, '*'))]
         if keys:
             await redis.delete(*keys)
         await redis.zrem(REGISTRY, session_id)
     retention_days = max(1, int(os.getenv('RETENTION_DAYS', '7')))
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "DELETE FROM log_events WHERE indexed_at < now() - ($1 * interval '1 day')",
-            retention_days,
-        )
+    await execute_all(
+        pools,
+        "DELETE FROM log_events WHERE indexed_at < now() - ($1 * interval '1 day')",
+        retention_days,
+    )
 
 
-async def generate(redis, ingest_url, pool):
+async def generate(redis, ingest_url, pools):
     next_due = {}
     last_cleanup = 0.0
     async with httpx.AsyncClient(timeout=15) as client:
@@ -76,7 +76,7 @@ async def generate(redis, ingest_url, pool):
             now = time.monotonic()
             if now - last_cleanup > 60:
                 try:
-                    await cleanup_expired(redis, pool)
+                    await cleanup_expired(redis, pools)
                 except Exception:
                     logger.exception('Expired-session cleanup failed')
                 last_cleanup = now
@@ -112,11 +112,11 @@ async def generate(redis, ingest_url, pool):
 
 async def run():
     redis = connect_redis()
-    pool = await connect_db()
+    pools = await connect_dbs()
     try:
-        await generate(redis, os.getenv('INGEST_URL', 'http://localhost:8000/api/logs'), pool)
+        await generate(redis, os.getenv('INGEST_URL', 'http://localhost:8000/api/logs'), pools)
     finally:
-        await pool.close()
+        await asyncio.gather(*(pool.close() for pool in pools))
         await redis.aclose()
 
 

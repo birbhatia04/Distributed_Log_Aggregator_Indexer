@@ -9,18 +9,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import ValidationError
 from fastapi.exceptions import RequestValidationError
-from .core import connect_db, connect_redis, initialize_db, ensure_group
+from .core import connect_dbs, connect_redis, initialize_dbs, ensure_group
 from .schemas import LogIn, LogEvent, Severity, GeneratorConfig, WorkerConfig
 from .metrics import mark, snapshot
-from .sessions import COOKIE, REGISTRY, SESSION_TTL, create_session, key, stream, touch_session, valid_session
+from .sessions import COOKIE, REGISTRY, SESSION_PATTERN, SESSION_TTL, create_session, key, stream, touch_session, valid_session
+from .storage import delete_count, event_by_id, search, service_summary, shard_health, stats as storage_stats
 
 @asynccontextmanager
 async def lifespan(app):
     app.state.redis = connect_redis()
-    app.state.pool = await connect_db()
-    await initialize_db(app.state.pool)
+    app.state.pools = await connect_dbs()
+    await initialize_dbs(app.state.pools)
     yield
-    await app.state.pool.close()
+    await asyncio.gather(*(pool.close() for pool in app.state.pools))
     await app.state.redis.aclose()
 
 app = FastAPI(title='Distributed Log Aggregator & Indexer API', version='1.0.0', lifespan=lifespan)
@@ -44,9 +45,18 @@ def private_response(response):
 @app.middleware('http')
 async def anonymous_session(request: Request, call_next):
     path = request.url.path
-    if request.method == 'OPTIONS' or path in ('/api/health', '/api/system/health') or not path.startswith('/api/'):
+    if request.method == 'OPTIONS' or path in ('/api/health', '/api/system/health', '/api/system/shards') or not path.startswith('/api/'):
         return await call_next(request)
     redis = request.app.state.redis
+    agent_key = os.getenv('AGENT_API_KEY')
+    agent_session = os.getenv('AGENT_SESSION_ID')
+    if agent_key and agent_session and request.headers.get('X-LogWeave-Agent-Key') == agent_key:
+        if not SESSION_PATTERN.fullmatch(agent_session):
+            return JSONResponse(status_code=503, content={'detail': 'AGENT_SESSION_ID must be 32 lowercase hex characters'})
+        request.state.session_id = agent_session
+        await touch_session(redis, agent_session)
+        await ensure_group(redis, agent_session)
+        return private_response(await call_next(request))
     supplied = request.cookies.get(COOKIE)
     if path == '/api/session':
         if await valid_session(redis, supplied):
@@ -107,8 +117,9 @@ async def publish(entries: list[LogIn], session_id: str):
 async def health():
     try:
         await app.state.redis.ping()
-        async with app.state.pool.acquire() as conn:
-            await conn.fetchval('SELECT 1')
+        for pool in app.state.pools:
+            async with pool.acquire() as conn:
+                await conn.fetchval('SELECT 1')
         return {'status': 'healthy'}
     except Exception as exc:
         raise HTTPException(503, 'Dependency unavailable') from exc
@@ -151,8 +162,11 @@ async def component_health():
     except Exception:
         pass
     try:
-        async with app.state.pool.acquire() as conn:
-            db_ok = await conn.fetchval('SELECT 1') == 1
+        checks = []
+        for pool in app.state.pools:
+            async with pool.acquire() as conn:
+                checks.append(await conn.fetchval('SELECT 1') == 1)
+        db_ok = all(checks)
     except Exception:
         pass
     return {'api': True, 'redis': redis_ok, 'postgres': db_ok}
@@ -182,12 +196,8 @@ async def search_logs(
             args.append(value)
             conditions.append(f'{name} {operator} ${len(args)}')
     where = 'WHERE ' + ' AND '.join(conditions) if conditions else ''
-    async with app.state.pool.acquire() as conn:
-        total = await conn.fetchval(f'SELECT count(*) FROM log_events {where}', *args)
-        rows = await conn.fetch(f'''SELECT event_id, timestamp, service, host, severity, message, trace_id,
-            metadata, received_at, indexed_at FROM log_events {where}
-            ORDER BY timestamp DESC, event_id DESC LIMIT ${len(args)+1} OFFSET ${len(args)+2}''', *args, limit, (page-1)*limit)
-    return {'items': [dict(row) for row in rows], 'total': total, 'page': page, 'limit': limit}
+    total, rows = await search(app.state.pools, where, args, page, limit)
+    return {'items': rows, 'total': total, 'page': page, 'limit': limit}
 
 @app.get('/api/logs/{event_id}')
 async def get_event(event_id: str, request: Request):
@@ -196,31 +206,23 @@ async def get_event(event_id: str, request: Request):
         parsed = UUID(event_id)
     except ValueError:
         raise HTTPException(422, 'Invalid event ID')
-    async with app.state.pool.acquire() as conn:
-        row = await conn.fetchrow('SELECT event_id, timestamp, service, host, severity, message, trace_id, metadata, received_at, indexed_at FROM log_events WHERE session_id=$1 AND event_id=$2', current_session(request), parsed)
+    row = await event_by_id(app.state.pools, current_session(request), parsed)
     if not row:
         raise HTTPException(404, 'Event not found')
-    return dict(row)
+    return row
 
 @app.get('/api/services')
 async def services(request: Request):
-    async with app.state.pool.acquire() as conn:
-        rows = await conn.fetch('''SELECT service, count(*) AS volume,
-          count(*) FILTER (WHERE severity IN ('ERROR','FATAL')) AS errors,
-          max(timestamp) AS last_seen FROM log_events WHERE session_id=$1
-          GROUP BY service ORDER BY service''', current_session(request))
-    return [dict(row) for row in rows]
+    return await service_summary(app.state.pools, current_session(request))
 
 @app.get('/api/stats')
 async def stats(request: Request):
-    async with app.state.pool.acquire() as conn:
-        row = await conn.fetchrow('''SELECT count(*) AS stored, count(DISTINCT service) AS active_services,
-          count(*) FILTER (WHERE severity IN ('ERROR','FATAL')) AS error_logs
-          FROM log_events WHERE session_id=$1''', current_session(request))
-        series = await conn.fetch('''SELECT date_trunc('minute', indexed_at) AS minute, count(*) AS indexed
-          FROM log_events WHERE session_id=$1 AND indexed_at > now() - interval '60 minutes'
-          GROUP BY 1 ORDER BY 1''', current_session(request))
-    return {**dict(row), 'series': [dict(x) for x in series]}
+    return await storage_stats(app.state.pools, current_session(request))
+
+
+@app.get('/api/system/shards')
+async def shards():
+    return {'count': len(app.state.pools), 'shards': await shard_health(app.state.pools)}
 
 @app.get('/api/metrics')
 async def metrics(request: Request):
@@ -299,6 +301,9 @@ async def reset_demo(request: Request):
 @app.post('/api/retention/run')
 async def retention(request: Request):
     days = max(1, int(os.getenv('RETENTION_DAYS', '7')))
-    async with app.state.pool.acquire() as conn:
-        result = await conn.execute("DELETE FROM log_events WHERE session_id=$1 AND timestamp < now() - ($2 * interval '1 day')", current_session(request), days)
-    return {'deleted': int(result.split()[-1]), 'retention_days': days}
+    deleted = await delete_count(
+        app.state.pools,
+        "DELETE FROM log_events WHERE session_id=$1 AND timestamp < now() - ($2 * interval '1 day')",
+        current_session(request), days,
+    )
+    return {'deleted': deleted, 'retention_days': days}

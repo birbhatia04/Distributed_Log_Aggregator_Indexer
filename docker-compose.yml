@@ -13,6 +13,20 @@ services:
       timeout: 3s
       retries: 15
     restart: unless-stopped
+  postgres-shard-1:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-logweave}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-logweave_local}
+      POSTGRES_DB: ${POSTGRES_DB:-logweave}
+    volumes:
+      - postgres_shard_1_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-logweave} -d ${POSTGRES_DB:-logweave}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
@@ -28,7 +42,10 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://logweave:logweave_local@postgres:5432/logweave}
+      DATABASE_SHARD_URLS: ${DATABASE_SHARD_URLS:-postgresql://logweave:logweave_local@postgres:5432/logweave,postgresql://logweave:logweave_local@postgres-shard-1:5432/logweave}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      AGENT_API_KEY: ${AGENT_API_KEY:-logweave-local-agent}
+      AGENT_SESSION_ID: ${AGENT_SESSION_ID:-00000000000000000000000000000001}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       MAX_GENERATION_RATE: ${MAX_GENERATION_RATE:-500}
       MAX_ACTIVE_SESSIONS: ${MAX_ACTIVE_SESSIONS:-50}
@@ -40,6 +57,7 @@ services:
       - "8000:8000"
     depends_on:
       postgres: { condition: service_healthy }
+      postgres-shard-1: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
@@ -52,10 +70,12 @@ services:
     command: ["python", "-m", "app.worker"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://logweave:logweave_local@postgres:5432/logweave}
+      DATABASE_SHARD_URLS: ${DATABASE_SHARD_URLS:-postgresql://logweave:logweave_local@postgres:5432/logweave,postgresql://logweave:logweave_local@postgres-shard-1:5432/logweave}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
     depends_on:
       postgres: { condition: service_healthy }
+      postgres-shard-1: { condition: service_healthy }
       redis: { condition: service_healthy }
     deploy:
       replicas: 2
@@ -65,12 +85,30 @@ services:
     command: ["python", "-m", "app.generator"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://logweave:logweave_local@postgres:5432/logweave}
+      DATABASE_SHARD_URLS: ${DATABASE_SHARD_URLS:-postgresql://logweave:logweave_local@postgres:5432/logweave,postgresql://logweave:logweave_local@postgres-shard-1:5432/logweave}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       INGEST_URL: http://backend:8000/api/logs
       MAX_TOTAL_GENERATION_RATE: ${MAX_TOTAL_GENERATION_RATE:-500}
       GENERATOR_IDLE_SECONDS: ${GENERATOR_IDLE_SECONDS:-120}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-3600}
       RETENTION_DAYS: ${RETENTION_DAYS:-7}
+    depends_on:
+      backend: { condition: service_healthy }
+    restart: unless-stopped
+  tailer:
+    build: ./backend
+    command: ["python", "-m", "app.tailer"]
+    environment:
+      INGEST_URL: http://backend:8000/api/logs
+      AGENT_API_KEY: ${AGENT_API_KEY:-logweave-local-agent}
+      TAIL_FILE: /logs/application.log
+      TAIL_CHECKPOINT: /state/checkpoint.json
+      TAIL_SERVICE: ${TAIL_SERVICE:-tailed-application}
+      TAIL_BATCH_SIZE: ${TAIL_BATCH_SIZE:-200}
+      TAIL_POLL_SECONDS: ${TAIL_POLL_SECONDS:-0.5}
+    volumes:
+      - ./sample-logs:/logs
+      - tailer_state:/state
     depends_on:
       backend: { condition: service_healthy }
     restart: unless-stopped
@@ -83,4 +121,6 @@ services:
     restart: unless-stopped
 volumes:
   postgres_data:
+  postgres_shard_1_data:
   redis_data:
+  tailer_state:

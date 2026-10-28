@@ -6,17 +6,22 @@ Application logs spread across services are difficult to search and reason about
 
 ## Functional and non-functional requirements
 
-The system ingests one event or a batch, validates structure, reports JSONL import errors, queues accepted events, indexes them idempotently, supports filtered full-text search, and exposes live metrics and controls. It favors clear failure behavior, reproducibility, local resource use, and maintainable modules over maximum throughput. No benchmark claim is made.
+The system tails real files, ingests one event or a batch, validates structure, reports JSONL import errors, queues accepted events, indexes them idempotently across shards, supports filtered full-text search, and exposes live metrics and controls. It favors clear failure behavior, reproducibility, local resource use, and maintainable modules over maximum throughput. Benchmark results are treated as environment-specific measurements rather than production capacity claims.
 
 ## High-level architecture
 
 ```mermaid
 flowchart LR
-  A[Five log sources] --> B[FastAPI ingestion]
+  A[Application log files] --> T[Durable tailing daemon]
+  T --> B[FastAPI ingestion]
+  S[Synthetic sources] --> B
   B --> C[(Redis Stream)]
   C --> D[Indexer worker replicas]
-  D --> E[(PostgreSQL log_events)]
-  E --> F[FastAPI search]
+  D --> H{Stable event hash}
+  H --> E0[(PostgreSQL shard 0)]
+  H --> E1[(PostgreSQL shard 1)]
+  E0 --> F[Concurrent search fan-out]
+  E1 --> F
   F --> G[React dashboard]
   C --> H[Redis metrics and controls]
   H --> G
@@ -77,9 +82,11 @@ flowchart TD
   H --> I[Backlog drains and logs are searchable]
 ```
 
-## Data model and indexing
+## Log tailing, data model, and indexing
 
-`log_events` has UUID `event_id` as primary key; event timestamp, service, host, severity, message, trace ID, JSONB metadata, received time, indexed time, and generated `search_vector`. B-tree indexes cover time, `(service,time)`, `(severity,time)`, and non-null trace ID. GIN indexes `search_vector`. Search combines optional filters with `AND`, orders by timestamp descending, and uses page/limit pagination. This is simple offset pagination; keyset pagination would be preferable for very large histories.
+The standalone tailer persists the source file's device, inode, and accepted byte offset. It never advances the offset before a successful batch response. Deterministic event UUIDs keep a retried line idempotent. Inode changes and size regression detect rotation and copy-truncate workflows.
+
+Each shard's `log_events` table has `(session_id,event_id)` as its primary key; event timestamp, service, host, severity, message, trace ID, JSONB metadata, received time, indexed time, and generated `search_vector`. B-tree indexes cover time, `(service,time)`, `(severity,time)`, and non-null trace ID. GIN indexes `search_vector`. Workers use stable SHA-256 modulo routing by event UUID. Search combines optional filters with `AND`, queries every shard concurrently, merges by timestamp, and returns one page. Keyset pagination and a shard map would be preferable at very large scale.
 
 ## API design
 
@@ -99,4 +106,4 @@ Backpressure uses a maximum stream length of 100,000; requests receive 429 above
 
 ## Scaling and trade-offs
 
-More consumer replicas can improve throughput while PostgreSQL and CPU allow. A per-event insert and acknowledgment keep behavior easy to teach but cost throughput. A single Redis stream and PostgreSQL table suit a laptop; partitioning, bulk inserts, stronger rate accounting, authentication, and a production metrics stack would be future steps. The injected delay is a real delay in worker processing; it is a failure experiment control rather than a simulated metric.
+More consumer replicas can improve throughput while Redis, PostgreSQL shards, and CPU allow. A per-event insert and acknowledgment keep behavior easy to teach but cost throughput. The two local PostgreSQL services demonstrate physical index distribution; `DATABASE_SHARD_URLS` can contain any fixed number of shards. Bulk inserts, consistent-hash rebalancing, stronger rate accounting, authentication/authorization, and a production metrics stack would be future steps. The injected delay is a real delay in worker processing; it is a failure experiment control rather than a simulated metric.

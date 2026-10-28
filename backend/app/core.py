@@ -1,4 +1,5 @@
 import os
+from hashlib import sha256
 import asyncpg
 import redis.asyncio as redis
 from .sessions import stream
@@ -9,6 +10,35 @@ GROUP = 'indexers'
 
 async def connect_db():
     return await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+
+
+def database_urls() -> list[str]:
+    """Return configured index shards, retaining DATABASE_URL compatibility."""
+    configured = os.getenv('DATABASE_SHARD_URLS', '')
+    urls = [url.strip() for url in configured.split(',') if url.strip()]
+    return urls or [DATABASE_URL]
+
+
+async def connect_dbs():
+    pools = []
+    try:
+        for url in database_urls():
+            pools.append(await asyncpg.create_pool(url, min_size=1, max_size=10))
+        return pools
+    except Exception:
+        for pool in pools:
+            await pool.close()
+        raise
+
+
+def shard_number(value, count: int) -> int:
+    """Stable hash routing: the same event reaches the same configured shard."""
+    digest = sha256(str(value).encode('utf-8')).digest()
+    return int.from_bytes(digest[:8], 'big') % count
+
+
+def shard_pool(pools, value):
+    return pools[shard_number(value, len(pools))]
 
 def connect_redis():
     return redis.from_url(REDIS_URL, decode_responses=True)
@@ -29,6 +59,11 @@ async def initialize_db(pool):
             await _initialize_db(conn)
         finally:
             await conn.execute('SELECT pg_advisory_unlock(51933744)')
+
+
+async def initialize_dbs(pools):
+    for pool in pools:
+        await initialize_db(pool)
 
 
 async def _initialize_db(conn):

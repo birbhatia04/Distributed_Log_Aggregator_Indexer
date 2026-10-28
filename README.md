@@ -1,6 +1,6 @@
 # Distributed Log Aggregator & Indexer
 
-A distributed log aggregator and indexer for a local system design demonstration. Logs pass through a real FastAPI → Redis Streams → independent worker → PostgreSQL pipeline before the React UI can search them.
+A distributed log aggregator and indexer for a local system design demonstration. A durable file-tailing daemon and synthetic sources send logs through a real FastAPI → Redis Streams → independent worker → sharded PostgreSQL pipeline before the React UI can search them.
 
 ## Quick start
 
@@ -20,6 +20,17 @@ Open the [Distributed Log Aggregator & Indexer](http://localhost:5173) and the [
 5. Scale workers with `docker compose up -d --scale worker=4 worker`. Compare measured throughput. Scale down with `docker compose up -d --scale worker=2 worker`.
 
 The generator's Start, Pause, Stop, and Burst controls call backend endpoints. The generator process posts batches to the ingestion HTTP path using that visitor's session cookie. Redis streams, counters, and controls are separate per visitor; PostgreSQL search is filtered by session. Chart history is collected while the browser is open and is not persisted across refreshes.
+
+## Tail a real log file
+
+Compose starts a standalone `tailer` daemon that watches `sample-logs/application.log`. Append a complete newline-terminated JSON or plaintext record:
+
+```bash
+printf '%s\n' '{"service":"checkout","host":"checkout-1","severity":"ERROR","message":"payment timeout"}' >> sample-logs/application.log
+docker compose logs -f tailer
+```
+
+The daemon reads only newly appended bytes, persists its `(device, inode, offset)` checkpoint in `tailer_state`, waits for incomplete lines, detects replacement and truncation, assigns deterministic event IDs, batches records, and retries failed requests with exponential backoff. Machine ingestion is authenticated with `AGENT_API_KEY`.
 
 ## API examples
 
@@ -47,22 +58,38 @@ cd frontend && npm ci && npm test && npm run build
 
 The integration tests use anonymous sessions against the running Compose services. A reset rotates only the test client's session.
 
+Run the deliberately disruptive Phase 2 tests separately. They stop or disconnect local services and always attempt restoration:
+
+```bash
+LOGWEAVE_FAULT_TESTS=1 .venv/bin/pytest tests/test_fault_injection.py -v
+```
+
+Run the reproducible scaling benchmark:
+
+```bash
+.venv/bin/python benchmarks/run.py --events 1000 --worker-counts 1 2 4
+```
+
 ## Layout
 
 - `backend/app/main.py`: ingestion, search, metrics, controls, SSE, retention.
 - `backend/app/worker.py`: consumer group processing, recovery, idempotent inserts.
 - `backend/app/generator.py`: realistic traffic via ingestion HTTP.
+- `backend/app/tailer.py`: durable real-file tailing, normalization, batching, and retry.
+- `backend/app/storage.py`: deterministic write routing and cross-shard query fan-out.
 - `frontend/src`: seven views and design tokens.
-- `tests`: HTTP pipeline and recovery checks.
+- `tests`: HTTP pipeline, tailer, fault injection, and recovery checks.
+- `benchmarks`: repeatable throughput, latency, search, and worker-scaling runner.
 - `docs/system-design.md`: architecture, contracts, guarantees, and Mermaid diagrams.
+- `docs/phase-2.md`: implementation evidence and submission checklist.
 
 ## Configuration
 
-`.env.example` documents database, Redis, CORS, session capacity, and retention settings. Redis AOF and named Docker volumes preserve local state. Sessions expire after `SESSION_TTL_SECONDS` without browser activity; the generator service removes expired Redis and PostgreSQL data. The reset control starts a new private simulation. `POST /api/retention/run` deletes only the caller's old logs.
+`.env.example` documents database shards, Redis, tailer identity, CORS, session capacity, and retention settings. Redis AOF, both PostgreSQL shards, and tail checkpoints use named Docker volumes. Sessions expire after `SESSION_TTL_SECONDS` without activity; the generator service removes expired Redis and PostgreSQL data from every shard. The reset control starts a new private simulation. `POST /api/retention/run` deletes only the caller's old logs across all shards.
 
 ## Separate frontend and backend hosting
 
-Deploy `frontend/` as a Vite project on Vercel (`npm run build`, output `dist`). Run the FastAPI API, **one generator process**, one or more indexer worker processes, Redis, and PostgreSQL on an always-running backend host. Set `DATABASE_URL`, `REDIS_URL`, `INGEST_URL` (the backend's private `/api/logs` URL), and the session settings on those services. Set `SESSION_COOKIE_SECURE=true` for HTTPS deployment.
+Deploy `frontend/` as a Vite project on Vercel (`npm run build`, output `dist`). Run the FastAPI API, **one generator process**, one or more indexer worker processes, Redis, and PostgreSQL on an always-running backend host. Set `DATABASE_URL`, `REDIS_URL`, `INGEST_URL` (the backend's private `/api/logs` URL), and the session settings on those services. `DATABASE_SHARD_URLS` is optional: when absent, the system uses `DATABASE_URL` as one shard, preserving the current Railway deployment. Set it to a comma-separated list of PostgreSQL URLs to enable distributed indexing. Set `SESSION_COOKIE_SECURE=true` for HTTPS deployment.
 
 For a Docker host using this repository, start the backend stack with `docker compose up -d --build postgres redis backend worker generator`. Expose the API through your host's HTTPS proxy. The frontend service can remain off on that host.
 

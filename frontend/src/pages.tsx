@@ -294,8 +294,8 @@ export function Overview({
                 <Server size={18} />
               </span>
               <span className="step-copy">
-                <strong>Sources</strong>
-                <small>Accepted by ingestion</small>
+                <strong>Sources + tailer</strong>
+                <small>Files and generated traffic</small>
               </span>
               <span className="step-measure">
                 <strong>
@@ -335,8 +335,8 @@ export function Overview({
                 <Database size={18} />
               </span>
               <span className="step-copy">
-                <strong>PostgreSQL</strong>
-                <small>Searchable events</small>
+                <strong>PostgreSQL shards</strong>
+                <small>Distributed search index</small>
               </span>
               <span className="step-measure">
                 <strong>{fmt(metrics?.indexed)}</strong>
@@ -361,7 +361,7 @@ export function Overview({
         <Metric
           label="Logs indexed"
           value={fmt(metrics?.indexed)}
-          detail="Searchable in PostgreSQL"
+          detail="Searchable across index shards"
         />
         <Metric
           label="Queue backlog"
@@ -547,9 +547,9 @@ const componentInfo: Record<
 > = {
   sources: {
     name: "Log sources",
-    purpose: "Five independent application services",
+    purpose: "Real file tailer and five demo services",
     detail:
-      "Authentication, payments, gateway, database, and notifications produce structured events with service, host, severity, trace, and context.",
+      "A checkpointed daemon tails real JSON or plaintext files. Authentication, payments, gateway, database, and notifications also produce structured demo traffic.",
   },
   collector: {
     name: "Ingestion API",
@@ -570,16 +570,16 @@ const componentInfo: Record<
       "Independent worker replicas consume batches. A worker reclaims abandoned pending entries; unique event IDs keep retries idempotent.",
   },
   database: {
-    name: "PostgreSQL",
-    purpose: "Indexed event storage",
+    name: "PostgreSQL shards",
+    purpose: "Distributed indexed event storage",
     detail:
-      "A log_events table stores events. B-tree indexes support filters and a generated tsvector with GIN supports full-text search.",
+      "Workers hash each event onto one physical shard. Every log_events table has B-tree filters and a generated tsvector with GIN full-text search.",
   },
   search: {
     name: "Search API",
     purpose: "Queryable logs and statistics",
     detail:
-      "FastAPI serves paginated search, filters, service summaries, and event detail from committed PostgreSQL rows.",
+      "FastAPI queries every shard concurrently, merges globally ordered pages, and serves filters, summaries, and event detail.",
   },
 };
 type FlowData = {
@@ -647,11 +647,19 @@ export function Pipeline({ metrics }: { metrics?: Metrics }) {
       ),
     refetchInterval: 5000,
   });
+  const { data: shardState } = useQuery({
+    queryKey: ["shard-health"],
+    queryFn: () =>
+      api<{ count: number; shards: { healthy: boolean; events: number | null }[] }>(
+        "/system/shards",
+      ),
+    refetchInterval: 5000,
+  });
   const nodes: Node<FlowData>[] = [
     [
       "sources",
-      "Log sources",
-      "Five services",
+      "Sources + tailer",
+      "Files and demo services",
       `${metrics?.generator.status === "running" ? metrics.generator.rate : 0} /s`,
       metrics?.generator.status ?? "stopped",
       0,
@@ -690,10 +698,12 @@ export function Pipeline({ metrics }: { metrics?: Metrics }) {
     ],
     [
       "database",
-      "PostgreSQL",
-      "Search index",
+      "PostgreSQL shards",
+      `${shardState?.count ?? "—"} index shards`,
       `${metrics?.indexed ?? 0} logs`,
-      health?.postgres ? "healthy" : "offline",
+      health?.postgres && shardState?.shards.every((shard) => shard.healthy)
+        ? "healthy"
+        : "offline",
       300,
       250,
     ],
@@ -1847,7 +1857,7 @@ export function Insights({
             </AreaChart>
           </ResponsiveContainer>
         ) : (
-          <State empty="Indexed volume will appear after traffic reaches PostgreSQL." />
+          <State empty="Indexed volume will appear after traffic reaches the PostgreSQL shards." />
         )}
       </section>
     </>
@@ -1865,15 +1875,15 @@ export function Documentation() {
           <section>
             <h2>How the pipeline works</h2>
             <p>
-              The Distributed Log Aggregator &amp; Indexer is a locally runnable distributed logging system. Five
-              demo services send structured JSON through FastAPI. Accepted
+              The Distributed Log Aggregator &amp; Indexer is a locally runnable distributed logging system. A durable
+              daemon tails real log files while five demo services generate structured traffic through FastAPI. Accepted
               events go into a Redis Stream, where independent indexer processes
-              consume from one group. They commit events to PostgreSQL before
+              consume from one group. They hash and commit events to PostgreSQL shards before
               acknowledging the stream entry. The search API only returns
               committed rows.
             </p>
             <div className="doc-flow">
-              <span>Services</span>
+              <span>Files + services</span>
               <ArrowRight size={16} />
               <span>FastAPI</span>
               <ArrowRight size={16} />
@@ -1881,7 +1891,7 @@ export function Documentation() {
               <ArrowRight size={16} />
               <span>Workers</span>
               <ArrowRight size={16} />
-              <span>PostgreSQL</span>
+              <span>PostgreSQL shards</span>
             </div>
           </section>
           <section>
@@ -1910,9 +1920,10 @@ export function Documentation() {
           <section>
             <h2>Search and retention</h2>
             <p>
-              PostgreSQL uses B-tree indexes for time, service, severity, and
+              Each PostgreSQL shard uses B-tree indexes for time, service, severity, and
               trace filters. A generated <code>tsvector</code> column and GIN
-              index support full-text message search. The retention endpoint
+              index support full-text message search. FastAPI fans queries out
+              concurrently and merges the ordered results. The retention endpoint
               deletes rows older than the configured number of days when
               invoked.
             </p>
@@ -1921,10 +1932,9 @@ export function Documentation() {
             <h2>Scaling limits</h2>
             <p>
               Run more worker replicas with Docker Compose. This improves
-              throughput until PostgreSQL or host resources become the
-              bottleneck. Local counters and one-second samples are intended for
-              a classroom demo; they are not a benchmark or production
-              monitoring stack.
+              throughput until Redis, a PostgreSQL shard, or host resources become the
+              bottleneck. The repository includes a repeatable benchmark runner;
+              results remain specific to the measured machine and workload.
             </p>
           </section>
         </article>

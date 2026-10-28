@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from .core import GROUP, connect_db, connect_redis, initialize_db
+from .core import GROUP, connect_dbs, connect_redis, initialize_dbs, shard_pool
 from .metrics import mark
 from .schemas import LogEvent
 from .sessions import active_sessions, dead_letter, key, stream
@@ -19,7 +19,7 @@ logger = logging.getLogger('logweave.worker')
 NAME = f'{socket.gethostname()}-{uuid4().hex[:6]}'
 
 
-async def index_one(pool, redis, session_id, message_id, fields):
+async def index_one(pools, redis, session_id, message_id, fields):
     started = time.monotonic()
     stream_name = stream(session_id)
     try:
@@ -34,6 +34,7 @@ async def index_one(pool, redis, session_id, message_id, fields):
         delay = int(await redis.get(key(session_id, 'workers:delay_ms')) or 0)
         if delay:
             await asyncio.sleep(delay / 1000)
+        pool = shard_pool(pools, event.event_id)
         async with pool.acquire() as conn:
             result = await conn.execute('''
             INSERT INTO log_events (session_id, event_id, timestamp, service, host, severity, message, trace_id, metadata, received_at)
@@ -66,8 +67,8 @@ async def session_ready(redis, session_id):
 
 async def run():
     redis = connect_redis()
-    pool = await connect_db()
-    await initialize_db(pool)
+    pools = await connect_dbs()
+    await initialize_dbs(pools)
     last_reclaim = 0.0
     try:
         while True:
@@ -86,7 +87,7 @@ async def run():
                         )
                         for message_id, fields in claimed:
                             if await session_ready(redis, session_id):
-                                await index_one(pool, redis, session_id, message_id, fields)
+                                await index_one(pools, redis, session_id, message_id, fields)
                     except Exception:
                         logger.exception('Pending recovery failed for a simulation')
                 last_reclaim = time.monotonic()
@@ -99,12 +100,12 @@ async def run():
                     session_id = stream_name.split(':')[1]
                     for message_id, fields in messages:
                         if await session_ready(redis, session_id):
-                            await index_one(pool, redis, session_id, message_id, fields)
+                            await index_one(pools, redis, session_id, message_id, fields)
             except Exception:
                 logger.exception('Worker read failed')
                 await asyncio.sleep(1)
     finally:
-        await pool.close()
+        await asyncio.gather(*(pool.close() for pool in pools))
         await redis.aclose()
 
 
