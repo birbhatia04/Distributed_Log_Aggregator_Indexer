@@ -1,3 +1,9 @@
+export type ComponentPerformance = {
+  indexed: number;
+  indexed_rate: number;
+  average_ms: number | null;
+};
+
 export type Metrics = {
   received: number;
   indexed: number;
@@ -14,6 +20,8 @@ export type Metrics = {
   generator: { status: string; rate: number };
   workers_paused: boolean;
   worker_delay_ms: number;
+  worker_performance?: (ComponentPerformance & { name: string; paused: boolean })[];
+  shard_performance?: (ComponentPerformance & { shard: number })[];
   timestamp: number;
 };
 export type Log = {

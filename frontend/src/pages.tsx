@@ -52,6 +52,7 @@ import {
   qs,
   type Log,
   type Metrics,
+  type ComponentPerformance,
   type Service,
   type Stats,
 } from "./api";
@@ -1336,6 +1337,77 @@ function FragmentRow({
     </>
   );
 }
+function PerformanceTable({
+  title, timeLabel, rows, empty,
+}: {
+  title: string;
+  timeLabel: string;
+  rows: (ComponentPerformance & { label: string; detail?: string; name?: string })[];
+  empty: string;
+}) {
+  return (
+    <table className="performance-table">
+      <caption>{title}</caption>
+      <thead>
+        <tr>
+          <th scope="col">Component</th>
+          <th scope="col">Logs/s</th>
+          <th scope="col">Indexed</th>
+          <th scope="col">{timeLabel}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.name ?? row.label}>
+            <th scope="row" title={row.name}>
+              {row.label}
+              {row.detail && <small>{row.detail}</small>}
+            </th>
+            <td>{fmt(row.indexed_rate)}</td>
+            <td>{fmt(row.indexed)}</td>
+            <td>{row.average_ms === null ? "—" : `${row.average_ms} ms`}</td>
+          </tr>
+        ))}
+        {!rows.length && <tr><td colSpan={4}>{empty}</td></tr>}
+      </tbody>
+    </table>
+  );
+}
+
+function IndexingPerformance({ metrics }: { metrics?: Metrics }) {
+  const workers = metrics?.worker_performance?.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const shards = metrics?.shard_performance;
+  return (
+    <section className="panel indexing-performance" aria-labelledby="indexing-performance">
+      <h3 id="indexing-performance">Worker and shard performance</h3>
+      <p>Logs/s uses the last completed second. Totals and averages cover new inserts in this session.</p>
+      {!metrics ? <State loading /> : !workers || !shards ? (
+        <State empty="Per-component metrics are unavailable. Run the updated backend and workers to collect them." />
+      ) : (
+        <div className="performance-tables">
+          <PerformanceTable
+            title="Indexer workers"
+            timeLabel="Avg. processing"
+            empty="No workers reporting."
+            rows={workers.map((worker, index) => ({
+              ...worker,
+              label: `Indexer ${index + 1}`,
+              detail: worker.paused ? "Paused" : "Active",
+            }))}
+          />
+          <PerformanceTable
+            title="PostgreSQL shards"
+            timeLabel="Avg. insert"
+            empty="No shards reporting."
+            rows={shards.map((shard) => ({ ...shard, label: `Shard ${shard.shard}` }))}
+          />
+        </div>
+      )}
+      <p>Worker time includes any added delay. Shard time measures the database insert.</p>
+    </section>
+  );
+}
+
 export function Lab({ metrics }: { metrics?: Metrics }) {
   const qc = useQueryClient();
   const [rate, setRate] = useState(50),
@@ -1556,6 +1628,7 @@ export function Lab({ metrics }: { metrics?: Metrics }) {
         />
         <Metric label="Errors" value={fmt(metrics?.errors)} />
       </div>
+      <IndexingPerformance metrics={metrics} />
       <div className="dashboard-grid">
         <section className="panel throughput-panel">
           <div className="panel-head">

@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from .core import GROUP, connect_dbs, connect_redis, initialize_dbs, shard_pool
+from .core import GROUP, connect_dbs, connect_redis, initialize_dbs, shard_number
 from .metrics import mark
 from .schemas import LogEvent
 from .sessions import active_sessions, dead_letter, key, stream
@@ -34,20 +34,26 @@ async def index_one(pools, redis, session_id, message_id, fields):
         delay = int(await redis.get(key(session_id, 'workers:delay_ms')) or 0)
         if delay:
             await asyncio.sleep(delay / 1000)
-        pool = shard_pool(pools, event.event_id)
+        shard = shard_number(event.event_id, len(pools))
+        pool = pools[shard]
         async with pool.acquire() as conn:
+            insert_started = time.monotonic()
             result = await conn.execute('''
             INSERT INTO log_events (session_id, event_id, timestamp, service, host, severity, message, trace_id, metadata, received_at)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
             ON CONFLICT (session_id, event_id) DO NOTHING
             ''', session_id, event.event_id, event.timestamp, event.service, event.host, event.severity.value,
             event.message, event.trace_id, json.dumps(event.metadata), event.received_at)
+            insert_ms = (time.monotonic() - insert_started) * 1000
         # The insert commits before acknowledgment. Retries are idempotent
         # within this simulation and cannot collide with another visitor.
         await redis.xack(stream_name, GROUP, message_id)
         await redis.xdel(stream_name, message_id)
         if result == 'INSERT 0 1':
-            await mark(redis, session_id, 'indexed')
+            await mark(redis, session_id, 'indexed', timings={
+                f'worker:{NAME}': (time.monotonic() - started) * 1000,
+                f'shard:{shard}': insert_ms,
+            })
         pipe = redis.pipeline()
         pipe.incrbyfloat(key(session_id, 'processing:total_ms'), (time.monotonic() - started) * 1000)
         pipe.incr(key(session_id, 'processing:count'))

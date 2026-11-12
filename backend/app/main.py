@@ -226,7 +226,7 @@ async def shards():
 
 @app.get('/api/metrics')
 async def metrics(request: Request):
-    return await snapshot(app.state.redis, current_session(request))
+    return await snapshot(app.state.redis, current_session(request), len(app.state.pools))
 
 @app.get('/api/metrics/stream')
 async def metrics_stream(request: Request):
@@ -236,7 +236,7 @@ async def metrics_stream(request: Request):
             try:
                 if not await valid_session(app.state.redis, session_id):
                     break
-                yield f'data: {json.dumps(await snapshot(app.state.redis, session_id))}\n\n'
+                yield f'data: {json.dumps(await snapshot(app.state.redis, session_id, len(app.state.pools)))}\n\n'
             except Exception:
                 yield 'event: error\ndata: {"message":"Metrics unavailable"}\n\n'
             await asyncio.sleep(1)
@@ -269,7 +269,7 @@ async def control_workers(config: WorkerConfig, request: Request):
         await app.state.redis.set(key(session_id, 'workers:paused'), '1' if config.paused else '0')
     if config.delay_ms is not None:
         await app.state.redis.set(key(session_id, 'workers:delay_ms'), config.delay_ms)
-    return await snapshot(app.state.redis, session_id)
+    return await snapshot(app.state.redis, session_id, len(app.state.pools))
 
 @app.post('/api/workers/{name}/control')
 async def control_worker(name: str, config: WorkerConfig, request: Request):

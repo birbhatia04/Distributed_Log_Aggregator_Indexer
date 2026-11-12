@@ -1369,6 +1369,49 @@ input[type="range"] {
 .lab-readout .metric-value {
   font-size: 23px;
 }
+.indexing-performance {
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.indexing-performance p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 8px 0 0;
+}
+.performance-tables {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px 28px;
+  margin: 16px 0;
+}
+.performance-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.performance-table caption {
+  text-align: left;
+  font-weight: 700;
+  padding-bottom: 8px;
+}
+.performance-table th,
+.performance-table td {
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.performance-table th:first-child {
+  text-align: left;
+}
+.performance-table thead th,
+.performance-table small {
+  color: var(--muted);
+}
+.performance-table small {
+  display: block;
+  font-weight: 400;
+}
 .experiment-guide {
   padding: 25px;
 }
