@@ -257,7 +257,7 @@ export function Overview({
         description="Follow every event from ingestion to search, as it happens."
         action={
           <Link className="button primary" to="/lab">
-            <Zap size={16} /> Open system lab <ArrowUpRight size={15} />
+            <Zap size={16} /> Open System <ArrowUpRight size={15} />
           </Link>
         }
       />
@@ -531,7 +531,7 @@ export function Overview({
             </table>
           </div>
         ) : (
-          <State empty="No indexed logs yet. Start traffic in the System lab." />
+          <State empty="No indexed logs yet. Start traffic on the System page." />
         )}
       </section>
     </>
@@ -1211,7 +1211,7 @@ export function Explorer() {
             </table>
           </div>
         ) : (
-          <State empty="No events match these filters. Try a broader search or start traffic in the System lab." />
+          <State empty="No events match these filters. Try a broader search or start traffic on the System page." />
         )}
         <div className="pagination">
           <span>
@@ -1432,7 +1432,7 @@ export function Lab({ metrics }: { metrics?: Metrics }) {
   return (
     <>
       <Header
-        title="System lab"
+        title="System"
         description="Apply real load and failure controls. Observe the system respond."
       
       />
@@ -1805,7 +1805,7 @@ export function Insights({
                 ? "Some accepted events are waiting to be indexed. Watch whether the backlog drains over time."
                 : metrics?.generator.status === "running"
                   ? "Events are arriving and the queue is currently clear."
-                  : "Start traffic in the System lab to collect performance data."}
+                  : "Start traffic on the System page to collect performance data."}
           </p>
         </div>
       </div>

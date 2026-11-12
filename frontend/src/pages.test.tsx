@@ -89,7 +89,7 @@ describe("frontend views", () => {
     expect(screen.getByText("Active services")).toBeTruthy();
     expect(
       screen
-        .getByRole("link", { name: /Open system lab/ })
+        .getByRole("link", { name: "Open System" })
         .getAttribute("href"),
     ).toBe("/lab");
   });

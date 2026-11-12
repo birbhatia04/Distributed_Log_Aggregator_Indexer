@@ -52,7 +52,7 @@ const nav = [
   { path: "/", label: "Overview", icon: Gauge },
   { path: "/pipeline", label: "Pipeline explorer", icon: GitBranch },
   { path: "/logs", label: "Log explorer", icon: Search },
-  { path: "/lab", label: "System lab", icon: FlaskConical },
+  { path: "/lab", label: "System", icon: FlaskConical },
   { path: "/services", label: "Services", icon: Layers3 },
   { path: "/insights", label: "Insights", icon: Activity },
   { path: "/architecture", label: "Architecture", icon: BookOpen },
