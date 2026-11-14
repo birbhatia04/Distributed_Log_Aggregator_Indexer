@@ -6,7 +6,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://distributedlogaggregatorindexer-production.up.railway.app/api/:path*"
+  "destination": "https://distributed-log-aggregator-indexer-backen.onrender.com/api/:path*"
     },
     {
       "source": "/(.*)",
@@ -14,3 +14,4 @@
     }
   ]
 }
+  
