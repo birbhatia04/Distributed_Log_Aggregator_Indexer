@@ -1,4 +1,4 @@
-"""Run the API, indexer, and demo generator in one Render web service."""
+"""Run the API, two indexers, and demo generator in one Render web service."""
 
 import os
 import signal
@@ -12,7 +12,8 @@ def main():
     env = {**os.environ, 'INGEST_URL': f'http://127.0.0.1:{port}/api/logs'}
     commands = [
         ('API', ['uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', str(port)]),
-        ('indexer', ['app.worker']),
+        ('indexer 1', ['app.worker']),
+        ('indexer 2', ['app.worker']),
         ('generator', ['app.generator']),
     ]
     children = []
